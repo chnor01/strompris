@@ -1,4 +1,4 @@
-import httpx, pandas as pd, time, os, json, re
+import httpx, pandas as pd, time, os, re
 from datetime import date, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
@@ -323,10 +323,9 @@ def fetch_day(target_date: date | None = None, area: str = "NO1") -> pd.DataFram
     return merged_today
     
 
-def load_historical(area: str = "NO1", data_dir: str | Path = "data") -> pd.DataFrame:
-    """Load historical data for an area"""
-    data_dir = Path(data_dir)
-    data_path = data_dir / f"{area}_historical.parquet"
+def load_parquet(path: str | Path = "data/NO1_historical.parquet") -> pd.DataFrame:
+    """Load parquet data"""
+    data_path = Path(path)
     if not data_path.exists():
         return None
     
@@ -419,15 +418,17 @@ def save_features(df: pd.DataFrame, area: str = "NO1"):
     df.to_parquet(output_path, index=False)
     print(f"Saved to {output_path}")
 
+
+
 #merge_backfill()
 #fetch_day()
 
-data = load_historical()
+#data = load_parquet()
 #print(average_prices(data))
 #print(negative_and_spike_periods(data))
 #print(missing_data(data))
-features = build_features(data)
-save_features(features)
+#features = build_features(data)
+#save_features(features)
 
 # todo: find corresponding weather stations to strompris areas
 
