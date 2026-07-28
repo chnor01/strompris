@@ -7,7 +7,6 @@ from httpx_retries import Retry, RetryTransport
 
 load_dotenv()
 
-
 class StromprisClient:
     """Fetches prices for electricity from hvakosterstrommen.no"""
     
@@ -226,7 +225,7 @@ class FrostClient:
         long_df = pd.DataFrame(rows)
         wide_df = long_df.pivot_table(
             index="valid_time", columns="element_id", values="value", aggfunc="first"
-        ).reset_index()
+            ).reset_index()
         wide_df.columns.name = None
  
         return wide_df.rename(columns={
@@ -242,92 +241,152 @@ class FrostClient:
  
     def _data_path(self, start: date, end: date):
         return self.data_dir / f"{self.station_id}_{start.isoformat()}_{end.isoformat()}.parquet"
+    
+
+class NveClient:
+    """Fetches dam water levels from NVE"""
+ 
+    BASE_URL = "https://biapi.nve.no/magasinstatistikk/api/Magasinstatistikk/HentOffentligData"
+ 
+    def __init__(
+        self,
+        retry_limit: int = 3,
+        backoff_factor: float = 0.5,
+        timeout: float = 30,
+        omr_type: str = "EL", 
+        omrnr: int = 1,
+        data_dir: str | Path = "data/nve",
+        ):
+        retry = Retry(total=retry_limit, backoff_factor=backoff_factor)
+        transport = RetryTransport(retry=retry)
+        self.client = httpx.Client(transport=transport, timeout=timeout)
+        self.omr_type = omr_type
+        self.omrnr = omrnr
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+ 
+    def get_all(self):
+        """Get full weekly level history for an area. Returns a dataframe"""
+        data_path = self._data_path()
+        if data_path.exists():
+            return pd.read_parquet(data_path)
+ 
+        data = self._get_response()
+        df = self._convert_data(data)
+ 
+        if not df.empty:
+            df.to_parquet(data_path, index=False)
+ 
+        return df
+ 
+    def _get_response(self):
+        """HTTP response"""
+        try:
+            res = self.client.get(self.BASE_URL)
+            res.raise_for_status()
+            time.sleep(1)
+            return res.json()
+        except httpx.HTTPError as exc:
+            print(f"HTTP exception: {exc}")
+            return None
+ 
+    def _convert_data(self, data: list[dict]):
+        """Convert data from json to dataframe, filtered to the chosen area"""
+        if not data:
+            return pd.DataFrame()
+ 
+        df = pd.DataFrame(data)
+        df = df[(df["omrType"] == self.omr_type) & (df["omrnr"] == self.omrnr)]
+ 
+        if df.empty:
+            return df
+ 
+        df["valid_time"] = pd.to_datetime(df["dato_Id"], utc=True)
+ 
+        return df[["valid_time", "fyllingsgrad", "fylling_TWh", "kapasitet_TWh"]].sort_values("valid_time").reset_index(drop=True)
+ 
+    def _data_path(self):
+        return self.data_dir / f"{self.omr_type}_{self.omrnr}.parquet"
 
 
-def merge_data(strompriser: pd.DataFrame, weather: pd.DataFrame) -> pd.DataFrame:
-    """Combine electricity prices and weather data to one format: timestamp, prisområde, pris_nok_kwh, temperatur_c, vind_m_s, nedbor_mm_24h"""
+def merge_data(strompriser: pd.DataFrame, weather: pd.DataFrame, magasin: pd.DataFrame) -> pd.DataFrame:
+    """Combine electricity prices, weather data, water dam data to one format: timestamp, prisområde, pris_nok_kwh, temperatur_c, nedbor_mm_24h, vind_m_s, fylling_TWh, kapasitet_TWh"""
     df = strompriser.merge(
         weather,
         left_on="timestamp",
         right_on="valid_time",
         how="left",
-    )
- 
+        )
+    
+    df = df.drop(columns=["valid_time", "pris_eur_kwh"])
+    
+    df = df.merge(
+        magasin,
+        left_on="timestamp",
+        right_on="valid_time",
+        how="left",
+        )
+    
+    df = df.drop(columns=["valid_time", "fylling_TWh", "kapasitet_TWh"])
+    
     df["nedbor_mm_24h"] = df["nedbor_mm_24h"].ffill()
- 
-    df = df.drop(columns=["valid_time"])
+    df["fyllingsgrad"] = df["fyllingsgrad"].ffill()
  
     return df.sort_values("timestamp").reset_index(drop=True)
 
 
-def fetch_data_range(start: date, end: date, area: str = "NO1"):
-    """Fetch strompriser and weather data for a larger time range, merge and save"""
+def fetch_data_range(area: str = "NO1", start: date = date(2025, 6, 1), end: date | None = None, data_dir: str | Path = "data"):
+    """Fetch strompriser, weather data, magasin data for a time range, merge into one dataframe and save as .parquet"""
     
+    if end is None:
+        end = date.today() - timedelta(days=1)
+        
+        
+    strompris = StromprisClient()
+    
+    client_id = os.getenv("FROST_CLIENT_ID")
+    if not client_id:
+        raise ValueError("FROST_CLIENT_ID er ikke satt — sjekk at .env lastes inn før dette kjøres")
+
+
+    frost = FrostClient(client_id=client_id)
+    nve = NveClient()
+    
+    print(f"Fetching data for time range: {start} -> {end}")
+    print(f"Fetching strompriser...")
     strompriser = strompris.get_range(start, end)
+    print(strompriser.shape)
+    
+    print(f"Fetching weather data...")
     weather = frost.get_range_chunked(start, end, chunk_days=90)
+    print(weather.shape)
+    
+    print(f"Fetching magasin data...")
+    magasin = nve.get_all()
+    print(magasin.shape)
     
     if strompriser.empty:
-        print("No strompriser!")
+        print("No strompriser, exiting...")
         return None
     
-    if weather.empty or weather[["temperatur_c", "vind_m_s"]].isna().any().any():
-        print("Weather data missing values, but saving...")
-
-    merged_backfill = merge_data(strompriser=strompriser, weather=weather)
+    merged = merge_data(strompriser=strompriser, weather=weather, magasin=magasin)
     
-    output_dir = Path("data")
+    output_dir = Path(data_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{area}_historical.parquet"
     
-    merged_backfill.to_parquet(output_path, index=False)
-    print(f"Saved {len(merged_backfill)} rows for time range: ( {start} to {end} ) -> {output_path}")
+    merged.to_parquet(output_path, index=False)
+    print(f"Saved {len(merged)} rows for time range: ( {start} to {end} ) -> {output_path}")
     
-    return merged_backfill
-
-
-def fetch_day(target_date: date | None = None, area: str = "NO1") -> pd.DataFrame:
-    """Fetch strompris and weather data for one data, merge and save. Defaults to yesterday's data if target_date not specified"""
-    if target_date is None:
-        target_date = date.today() - timedelta(days=1)
-    
-    strom_today = strompris.get_day(target_date)
-    weather_today = frost.get_range(target_date, target_date + timedelta(days=1))
-    
-    if strom_today.empty:
-        print("No strompriser!")
-        return None
-    
-    if weather_today.empty or weather_today[["temperatur_c", "vind_m_s"]].isna().any().any():
-        print("Weather data missing values, but saving...")
-    
-    merged_today = merge_data(strom_today, weather_today)
-    print(merged_today.head(30))
-    
-    output_dir = Path("data/daily")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{area}_{target_date.isoformat()}.parquet"
-    
-    merged_today.to_parquet(output_path, index=False)
-    print(f"Saved {len(merged_today)} rows for {target_date} -> {output_path}")
-    
-    return merged_today
-    
-
+    return merged
 
 
 # todo: find corresponding weather stations to strompris areas
 
 if __name__ == "__main__":
-    strompris = StromprisClient()
-
-    client_id = os.getenv("FROST_CLIENT_ID")
-    frost = FrostClient(client_id=client_id)
-
-    start = date(2025, 6, 1)
+    start = date(2022, 1, 1)
     end = date.today() - timedelta(days=1)
 
-    fetch_data_range(start, end)
-    #fetch_day()
-
-
-
+    data = fetch_data_range(start=start, end=end)
+    
+    

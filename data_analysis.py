@@ -54,7 +54,7 @@ def missing_data(df: pd.DataFrame):
 
 
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add more columns for prices at t-24h (1 day) and t-168h (1 week), rolling average, and time info"""
+    """Add more columns for electricity prices, weather, magasin data"""
     df = df.sort_values("timestamp").reset_index(drop=True).copy()
  
     df["pris_lag_24h"] = df["pris_nok_kwh"].shift(24)
@@ -68,12 +68,27 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["ukedag"] = local.dt.dayofweek
     df["er_helg"] = (local.dt.dayofweek >= 5).astype(int)
     df["maned"] = local.dt.month
+    
+    df["temp_rullende_24h"] = df["temperatur_c"].rolling(24).mean()
+    df["temp_rullende_72h"] = df["temperatur_c"].rolling(72).mean()
+    df["temp_min_72h"] = df["temperatur_c"].rolling(72).min()
+    df["temp_endring_24h"] = df["temperatur_c"] - df["temperatur_c"].shift(24)
+    df["vind_rullende_24h"] = df["vind_m_s"].rolling(24).mean()
+    
+    df["fyllingsgrad_endring_7d"] = df["fyllingsgrad"] - df["fyllingsgrad"].shift(168)
 
     decimal_columns = [
     "pris_lag_24h",
     "pris_lag_168h",
     "pris_rullende_24h",
     "pris_rullende_168h",
+    "fyllingsgrad",
+    "fyllingsgrad_endring_7d",
+    "temp_rullende_24h",
+    "temp_rullende_72h",
+    "temp_min_72h",
+    "temp_endring_24h",
+    "vind_rullende_24h",
     ]
     df[decimal_columns] = df[decimal_columns].round(5)
 
@@ -97,9 +112,9 @@ def load_parquet(path: str | Path = "data/NO1_historical.parquet") -> pd.DataFra
     
 if __name__ == "__main__":
     data = load_parquet()
-    print(average_prices(data))
-    print(negative_and_spike_periods(data))
-    print(missing_data(data))
+    #print(average_prices(data))
+    #print(negative_and_spike_periods(data))
+    #print(missing_data(data))
 
     features = build_features(data)
     save_features(features)

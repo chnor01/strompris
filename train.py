@@ -3,6 +3,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from dataclasses import dataclass
 from data_analysis import load_parquet
 from statsmodels.tsa.statespace.sarimax import SARIMAX
+import lightgbm as lgb
 
 @dataclass
 class Split:
@@ -113,7 +114,7 @@ def train_sarima(train: pd.DataFrame, test: pd.DataFrame, target_col: str = "pri
         seasonal_order=seasonal_order,
         enforce_stationarity=False,
         enforce_invertibility=False,
-    )
+        )
     fit = model.fit(disp=False)
  
     forecast = fit.forecast(steps=len(test))
