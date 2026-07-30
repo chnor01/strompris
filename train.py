@@ -1,9 +1,8 @@
-import pandas as pd, numpy as np
+import pandas as pd, numpy as np, lightgbm as lgb, optuna
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from dataclasses import dataclass
 from data_analysis import load_parquet
 from statsmodels.tsa.statespace.sarimax import SARIMAX
-import lightgbm as lgb
 
 @dataclass
 class Split:
@@ -97,7 +96,7 @@ def evaluate_baseline(splits: list[Split], target_col: str = "pris_nok_kwh") -> 
                 "mae": mean_absolute_error(y_true, y_pred),
                 "rmse": np.sqrt(mean_squared_error(y_true, y_pred)),
                 "n": len(test),
-            })
+                })
  
     return pd.DataFrame(results)
  
@@ -121,13 +120,15 @@ def train_sarima(train: pd.DataFrame, test: pd.DataFrame, target_col: str = "pri
     return forecast.values
  
  
-def evaluate_sarima(splits: list[Split], target_col: str = "pris_nok_kwh") -> pd.DataFrame:
+def evaluate_sarima(splits: list[Split], target_col: str = "pris_nok_kwh", last_n_days_train: int = 90) -> pd.DataFrame:
     """Evaluate SARIMA on each fold"""
     results = []
  
     for split in splits:
         train = split.train
-        
+        if last_n_days_train is not None:
+            cutoff = train["timestamp"].max() - pd.Timedelta(days=last_n_days_train)
+            train = train[train["timestamp"] >= cutoff]
  
         test = split.test.dropna(subset=[target_col])
         if test.empty:
@@ -148,30 +149,183 @@ def evaluate_sarima(splits: list[Split], target_col: str = "pris_nok_kwh") -> pd
             "mae": mean_absolute_error(y_true, y_pred),
             "rmse": np.sqrt(mean_squared_error(y_true, y_pred)),
             "n": len(test),
-        })
+            })
  
     return pd.DataFrame(results)
     
 
+FEATURE_COLS = [
+    "pris_lag_24h",
+    "pris_lag_168h",
+    "pris_rullende_24h",
+    "pris_rullende_168h",
+    "temperatur_c",
+    "temp_rullende_24h",
+    "temp_rullende_72h",
+    "temp_min_72h",
+    "temp_endring_24h",
+    "vind_m_s",
+    "vind_rullende_24h",
+    "nedbor_mm_24h",
+    "fyllingsgrad",
+    "fyllingsgrad_endring_7d",
+    "time_pa_dognet",
+    "ukedag",
+    "er_helg",
+    "maned",
+    ]
+CATEGORICAL_COLS = ["ukedag", "maned"]
+ 
+TARGET_COL = "pris_nok_kwh"
+ 
+ 
+def train_lightgbm(train: pd.DataFrame, test: pd.DataFrame, params: dict | None = None):
+    """Train LightGBM model"""
+    if params is None:
+        params = {
+            "objective": "regression",
+            "metric": "mae",
+            "num_leaves": 31,
+            "learning_rate": 0.05,
+            "n_estimators": 500,
+            "verbose": -1,
+            }
+ 
+    X_train = train[FEATURE_COLS]
+    y_train = train[TARGET_COL]
+    X_test = test[FEATURE_COLS]
+ 
+    model = lgb.LGBMRegressor(**params)
+    model.fit(X_train, y_train, categorical_feature=CATEGORICAL_COLS)
+ 
+    y_pred = model.predict(X_test)
+    return y_pred, model
+ 
+ 
+def evaluate_lightgbm(splits: list[Split], params: dict | None = None) -> pd.DataFrame:
+    """Evaluate LightGBM on every fold"""
+    results = []
+    models = []
+ 
+    for split in splits:
+        train = split.train.dropna(subset=FEATURE_COLS + [TARGET_COL])
+        test = split.test.dropna(subset=FEATURE_COLS + [TARGET_COL])
+ 
+        if train.empty or test.empty:
+            print(f"Fold {split.fold}: empty/missing values, skipping...")
+            continue
+ 
+        y_pred, model = train_lightgbm(train, test, params=params)
+        y_test = test[TARGET_COL].values
+ 
+        mae = mean_absolute_error(y_test, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+ 
+        results.append({
+            "fold": split.fold,
+            "model": "lightgbm",
+            "mae": mae,
+            "rmse": rmse,
+            "n": len(test),
+            })
+        models.append(model)
+ 
+        print(f"Fold {split.fold}: MAE={mae:.4f}, RMSE={rmse:.4f} (n={len(test)})")
+ 
+    return pd.DataFrame(results), models
+ 
+ 
+def print_feature_importance(model, top_n: int = 15):
+    importance = pd.DataFrame({"feature": FEATURE_COLS, "importance": model.feature_importances_}).sort_values("importance", ascending=False)
+ 
+    print(f"Top {top_n} most important features")
+    print(importance.head(top_n).to_string(index=False))
+
+
+
+def objective(trial: optuna.Trial, splits) -> float:
+    """Optuna suggests hyperparameters based on each trial's MAE"""
+    params = {
+        "objective": "regression",
+        "metric": "mae",
+        "verbose": -1,
+        "num_leaves": trial.suggest_int("num_leaves", 15, 127),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+        "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
+        "max_depth": trial.suggest_int("max_depth", 3, 12),
+        "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
+        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+    }
+ 
+    results, _ = evaluate_lightgbm(splits, params=params)
+ 
+    if results.empty:
+        return float("inf")
+ 
+    return float(results["mae"].median())
+ 
+ 
+def optuna_search(splits: list[Split], n_trials: int = 50) -> optuna.Study:
+    study = optuna.create_study(direction="minimize")
+    study.optimize(
+        lambda trial: objective(trial, splits),
+        n_trials=n_trials,
+        show_progress_bar=True,
+        )
+ 
+    print(f"\nBest median MAE: {study.best_value:.4f}")
+    print(f"Best params:")
+    for k, v in study.best_params.items():
+        print(f"{k}: {v}")
+ 
+    return study
+
+
+
 
 if __name__ == "__main__":
     df = load_parquet("data/NO1_features.parquet")
+    df = df[df["timestamp"] >= "2023-01-01"]
     splits = create_splits(df, test_size_days=7, min_train_days=180, step_days=30)
     #print_splits(splits)
     print(len(splits))
+
+
+    print("Seasonal-naive (t-24h and t-168h)")
+    naive_results = evaluate_baseline(splits)
+    print(naive_results)
+    print("\nAverage per model:")
+    print(naive_results.groupby("model")[["mae", "rmse"]].mean())
+
+    print("SARIMA")
+    sarima_results = evaluate_sarima(splits)
+    print(sarima_results)
+    if not sarima_results.empty:
+        print("\nAverage:")
+        print(sarima_results[["mae", "rmse"]].mean())
+        
+    all_results = pd.concat([naive_results, sarima_results], ignore_index=True)
+    all_results.to_csv("data/baseline_results.csv", index=False)
+    print("\nSaved to data/baseline_results.csv")
     
-    def baseline():
-        naive_results = evaluate_baseline(splits)
-        print(naive_results)
-        print("\nAverage per model:")
-        print(naive_results.groupby("model")[["mae", "rmse"]].mean())
-    
-    def sarimax():
-        sarima_results = evaluate_sarima(splits)
-        print(sarima_results)
-        if not sarima_results.empty:
-            print("\nAverage:")
-            print(sarima_results[["mae", "rmse"]].mean())
-            
-    #print(baseline())
-    print(sarimax())
+    study = optuna_search(splits=splits, n_trials=50)
+
+    best_params = {
+        "objective": "regression",
+        "metric": "mae",
+        "verbose": -1,
+        **study.best_params,
+    }
+
+    results, _ = evaluate_lightgbm(splits, params=best_params)
+
+    print(f"Results with best params")
+    print(f"Median MAE: {results["mae"].median():.4f}")
+    print(f"Average MAE: {results["mae"].mean():.4f}")
+        
+    pd.DataFrame([study.best_params]).to_csv("data/best_lightgbm_params.csv", index=False)
+    print("Saved best params to data/best_lightgbm_params.csv")
+        
