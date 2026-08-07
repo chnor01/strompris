@@ -255,28 +255,19 @@ class NveClient:
         timeout: float = 30,
         omr_type: str = "EL", 
         omrnr: int = 1,
-        data_dir: str | Path = "data/nve",
         ):
         retry = Retry(total=retry_limit, backoff_factor=backoff_factor)
         transport = RetryTransport(retry=retry)
         self.client = httpx.Client(transport=transport, timeout=timeout)
         self.omr_type = omr_type
         self.omrnr = omrnr
-        self.data_dir = Path(data_dir)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
  
     def get_all(self):
         """Get full weekly level history for an area. Returns a dataframe"""
-        data_path = self._data_path()
-        if data_path.exists():
-            return pd.read_parquet(data_path)
- 
+        
         data = self._get_response()
         df = self._convert_data(data)
- 
-        if not df.empty:
-            df.to_parquet(data_path, index=False)
- 
+        
         return df
  
     def _get_response(self):
@@ -305,8 +296,6 @@ class NveClient:
  
         return df[["valid_time", "fyllingsgrad", "fylling_TWh", "kapasitet_TWh"]].sort_values("valid_time").reset_index(drop=True)
  
-    def _data_path(self):
-        return self.data_dir / f"{self.omr_type}_{self.omrnr}.parquet"
 
 
 def merge_data(strompriser: pd.DataFrame, weather: pd.DataFrame, magasin: pd.DataFrame) -> pd.DataFrame:
@@ -355,15 +344,15 @@ def fetch_data_range(area: str = "NO1", start: date = date(2025, 6, 1), end: dat
     print(f"Fetching data for time range: {start} -> {end}")
     print(f"Fetching strompriser...")
     strompriser = strompris.get_range(start, end)
-    print(strompriser.shape)
+    print(strompriser.tail(10))
     
     print(f"Fetching weather data...")
     weather = frost.get_range_chunked(start, end, chunk_days=90)
-    print(weather.shape)
+    print(weather.tail(10))
     
     print(f"Fetching magasin data...")
     magasin = nve.get_all()
-    print(magasin.shape)
+    print(magasin.tail(10))
     
     if strompriser.empty:
         print("No strompriser, exiting...")
@@ -388,5 +377,4 @@ if __name__ == "__main__":
     end = date.today() - timedelta(days=1)
 
     data = fetch_data_range(start=start, end=end)
-    
-    
+    print(data.tail(10))
