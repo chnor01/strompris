@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "httpx-retries>=0.6.0",
     "lightgbm>=4.7.0",
@@ -15,4 +16,5 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "scikit-learn>=1.9.0",
     "statsmodels>=0.14.6",
+    "uvicorn>=0.52.1",
 ]
