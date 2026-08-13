@@ -1,6 +1,6 @@
 
 from contextlib import asynccontextmanager
- 
+from functools import lru_cache
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from data_analysis import load_parquet
 from optimization_problem import train_final_model, make_price_forecast, optimize_charging, naive_charging
  
+ 
+LRU_MAX_CACHE = 20
 
 # model and history are loaded/trained once at startup
 model_state = {}
@@ -89,6 +91,14 @@ def health():
         }
  
  
+@lru_cache(maxsize=LRU_MAX_CACHE)
+def _cached_forecast(hours_ahead: int) -> pd.DataFrame:
+    return make_price_forecast(
+        model_state["model"],
+        model_state["history"],
+        n_hours_ahead=hours_ahead,
+        )
+ 
 @app.get("/forecast", response_model=ForecastResponse)
 def get_forecast(hours_ahead: int = 24):
     """Return a price forecast for the next N hours (default: 24)."""
@@ -96,11 +106,7 @@ def get_forecast(hours_ahead: int = 24):
     if hours_ahead < 1 or hours_ahead > 72:
         raise HTTPException(status_code=400, detail="hours_ahead must be between 1 and 72")
  
-    forecast = make_price_forecast(
-        model_state["model"],
-        model_state["history"],
-        n_hours_ahead=hours_ahead,
-        )
+    forecast = _cached_forecast(hours_ahead)
  
     return ForecastResponse(
         generated_from=str(model_state["history"]["timestamp"].max()),
@@ -115,11 +121,7 @@ def get_forecast(hours_ahead: int = 24):
 def get_charging_plan(request: ChargingRequest):
     """Calculate a cost-optimal charging plan given an energy need and a deadline"""
     
-    forecast = make_price_forecast(
-        model_state["model"],
-        model_state["history"],
-        n_hours_ahead=request.hours_ahead,
-        )
+    forecast = _cached_forecast(request.hours_ahead)
  
     try:
         plan = optimize_charging(

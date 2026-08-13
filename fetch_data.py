@@ -155,7 +155,7 @@ class FrostClient:
         data_path = self._data_path(start, end)
         if data_path.exists():
             return pd.read_parquet(data_path)
-
+        
         all_data = []
         for params in self._build_params_hourly(start, end):
             response = self._get_response(params)
