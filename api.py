@@ -5,7 +5,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
  
-from data_analysis import load_parquet
+from data_analysis import load_parquet, build_features
 from optimization_problem import train_final_model, make_price_forecast, optimize_charging, naive_charging
  
  
@@ -18,8 +18,9 @@ model_state = {}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Loading data and training model...")
-    df = load_parquet("data/NO1_features.parquet")
+    df = load_parquet("data/NO1_historical.parquet")
     df = df[df["timestamp"] >= "2023-01-01"]
+    df = build_features(df)
  
     best_params = pd.read_csv("data/best_lightgbm_params.csv").iloc[0].to_dict()
     best_params.update({"objective": "regression", "metric": "mae", "verbose": -1})

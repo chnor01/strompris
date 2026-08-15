@@ -9,8 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
+.env
 
 data/strompris
 data/frost
+*.parquet
 
-.env
+!data/NO1_historical.parquet

@@ -1,7 +1,7 @@
 import pandas as pd, numpy as np, lightgbm as lgb, optuna
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from dataclasses import dataclass
-from data_analysis import load_parquet
+from data_analysis import load_parquet, build_features
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 @dataclass
@@ -287,8 +287,10 @@ def optuna_search(splits: list[Split], n_trials: int = 50) -> optuna.Study:
 
 
 if __name__ == "__main__":
-    df = load_parquet("data/NO1_features.parquet")
+    df = load_parquet("data/NO1_historical.parquet")
     df = df[df["timestamp"] >= "2023-01-01"]
+    df = build_features(df)
+    
     splits = create_splits(df, test_size_days=7, min_train_days=180, step_days=30)
     #print_splits(splits)
     print(len(splits))

@@ -111,7 +111,7 @@ def load_parquet(path: str | Path = "data/NO1_historical.parquet") -> pd.DataFra
     return df.sort_values("timestamp").reset_index(drop=True)
     
 if __name__ == "__main__":
-    data = load_parquet()
+    data = load_parquet("data/NO1_historical.parquet")
     #print(average_prices(data))
     #print(negative_and_spike_periods(data))
     #print(missing_data(data))

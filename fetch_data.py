@@ -33,7 +33,7 @@ class StromprisClient:
         return f"{self.BASE_URL}/{day.year}/{day.month:02d}-{day.day:02d}_{self.area}.json"
         
     def get_day(self, day):
-        """Get hourly strom prices for one day. Returns a dataframe"""
+        """Get hourly electricity prices for one day. Returns a dataframe"""
         data_path = self._data_path(day)
         if data_path.exists():
             return pd.read_parquet(data_path)
@@ -49,7 +49,7 @@ class StromprisClient:
         return df
             
     def get_range(self, start: date, end: date):
-        """Get hourly strom prices from a range of days"""
+        """Get hourly electricity prices from a range of days"""
         dataframes = []
         current = start
         while current <= end:
@@ -253,14 +253,14 @@ class NveClient:
         retry_limit: int = 3,
         backoff_factor: float = 0.5,
         timeout: float = 30,
-        omr_type: str = "EL", 
-        omrnr: int = 1,
+        area_type: str = "EL", 
+        area_number: int = 1,
         ):
         retry = Retry(total=retry_limit, backoff_factor=backoff_factor)
         transport = RetryTransport(retry=retry)
         self.client = httpx.Client(transport=transport, timeout=timeout)
-        self.omr_type = omr_type
-        self.omrnr = omrnr
+        self.area_type = area_type
+        self.area_number = area_number
  
     def get_all(self):
         """Get full weekly level history for an area. Returns a dataframe"""
@@ -287,7 +287,7 @@ class NveClient:
             return pd.DataFrame()
  
         df = pd.DataFrame(data)
-        df = df[(df["omrType"] == self.omr_type) & (df["omrnr"] == self.omrnr)]
+        df = df[(df["omrType"] == self.area_type) & (df["omrnr"] == self.area_number)]
  
         if df.empty:
             return df
@@ -324,8 +324,8 @@ def merge_data(strompriser: pd.DataFrame, weather: pd.DataFrame, magasin: pd.Dat
     return df.sort_values("timestamp").reset_index(drop=True)
 
 
-def fetch_data_range(area: str = "NO1", start: date = date(2025, 6, 1), end: date | None = None, data_dir: str | Path = "data"):
-    """Fetch strompriser, weather data, magasin data for a time range, merge into one dataframe and save as .parquet"""
+def fetch_data_range(area: str = "NO1", start: date = date(2022, 1, 1), end: date | None = None, data_dir: str | Path = "data"):
+    """Fetch electricity, weather, magasin data for a time range, merge into one dataframe and save as .parquet"""
     
     if end is None:
         end = date.today() - timedelta(days=1)
@@ -369,8 +369,6 @@ def fetch_data_range(area: str = "NO1", start: date = date(2025, 6, 1), end: dat
     
     return merged
 
-
-# todo: find corresponding weather stations to strompris areas
 
 if __name__ == "__main__":
     start = date(2022, 1, 1)

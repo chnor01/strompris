@@ -1,7 +1,7 @@
 import pandas as pd, pulp, lightgbm as lgb, numpy as np
 from dataclasses import dataclass
 from train import FEATURE_COLS, TARGET_COL, CATEGORICAL_COLS
-from data_analysis import load_parquet
+from data_analysis import load_parquet, build_features
 
 
 @dataclass
@@ -168,8 +168,9 @@ def _build_future_row(working_data: pd.DataFrame, new_time: pd.Timestamp) -> pd.
  
 if __name__ == "__main__":
  
-    df = load_parquet("data/NO1_features.parquet")
+    df = load_parquet("data/NO1_historical.parquet")
     df = df[df["timestamp"] >= "2023-01-01"]
+    df = build_features(df)
 
     best_params = pd.read_csv("data/best_lightgbm_params.csv").iloc[0].to_dict()
     best_params.update({"objective": "regression", "metric": "mae", "verbose": -1})
