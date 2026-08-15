@@ -14,5 +14,7 @@ wheels/
 data/strompris
 data/frost
 *.parquet
+*.csv
 
+!data/best_lightbgm_params.csv
 !data/NO1_historical.parquet

@@ -2,7 +2,6 @@ import pandas as pd, numpy as np, lightgbm as lgb, optuna
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from dataclasses import dataclass
 from data_analysis import load_parquet, build_features
-from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 @dataclass
 class Split:
@@ -100,58 +99,6 @@ def evaluate_baseline(splits: list[Split], target_col: str = "pris_nok_kwh") -> 
  
     return pd.DataFrame(results)
  
- 
-def train_sarima(train: pd.DataFrame, test: pd.DataFrame, target_col: str = "pris_nok_kwh",
-                  order=(1, 1, 1), seasonal_order=(1, 0, 1, 24)):
-    
-    y_train = train.set_index("timestamp")[target_col].asfreq("h")
-    y_train = y_train.ffill()  # SARIMA doesn't tolerate gaps in the time series
- 
-    model = SARIMAX(
-        y_train,
-        order=order,
-        seasonal_order=seasonal_order,
-        enforce_stationarity=False,
-        enforce_invertibility=False,
-        )
-    fit = model.fit(disp=False)
- 
-    forecast = fit.forecast(steps=len(test))
-    return forecast.values
- 
- 
-def evaluate_sarima(splits: list[Split], target_col: str = "pris_nok_kwh", last_n_days_train: int = 90) -> pd.DataFrame:
-    """Evaluate SARIMA on each fold"""
-    results = []
- 
-    for split in splits:
-        train = split.train
-        if last_n_days_train is not None:
-            cutoff = train["timestamp"].max() - pd.Timedelta(days=last_n_days_train)
-            train = train[train["timestamp"] >= cutoff]
- 
-        test = split.test.dropna(subset=[target_col])
-        if test.empty:
-            continue
- 
-        print(f"Fold {split.fold}: training SARIMA on {len(train)} rows...")
-        try:
-            y_pred = train_sarima(train, test, target_col=target_col)
-        except Exception as exc:
-            print(f"Fold {split.fold}: SARIMA failed ({exc}), skipping")
-            continue
- 
-        y_true = test[target_col].values
- 
-        results.append({
-            "fold": split.fold,
-            "model": "sarima",
-            "mae": mean_absolute_error(y_true, y_pred),
-            "rmse": np.sqrt(mean_squared_error(y_true, y_pred)),
-            "n": len(test),
-            })
- 
-    return pd.DataFrame(results)
     
 
 FEATURE_COLS = [
@@ -249,13 +196,13 @@ def objective(trial: optuna.Trial, splits) -> float:
         "objective": "regression",
         "metric": "mae",
         "verbose": -1,
-        "num_leaves": trial.suggest_int("num_leaves", 15, 127),
-        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-        "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
-        "max_depth": trial.suggest_int("max_depth", 3, 12),
-        "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
-        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+        "num_leaves": trial.suggest_int("num_leaves", 15, 200),
+        "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
+        "n_estimators": trial.suggest_int("n_estimators", 100, 1500),
+        "max_depth": trial.suggest_int("max_depth", 3, 15),
+        "min_child_samples": trial.suggest_int("min_child_samples", 5, 150),
+        "subsample": trial.suggest_float("subsample", 0.4, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 1.0),
         "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
         "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
     }
@@ -292,28 +239,9 @@ if __name__ == "__main__":
     df = build_features(df)
     
     splits = create_splits(df, test_size_days=7, min_train_days=180, step_days=30)
-    #print_splits(splits)
-    print(len(splits))
+    print(f"Number of splits: {len(splits)}")
 
-
-    print("Seasonal-naive (t-24h and t-168h)")
-    naive_results = evaluate_baseline(splits)
-    print(naive_results)
-    print("\nAverage per model:")
-    print(naive_results.groupby("model")[["mae", "rmse"]].mean())
-
-    print("SARIMA")
-    sarima_results = evaluate_sarima(splits)
-    print(sarima_results)
-    if not sarima_results.empty:
-        print("\nAverage:")
-        print(sarima_results[["mae", "rmse"]].mean())
-        
-    all_results = pd.concat([naive_results, sarima_results], ignore_index=True)
-    all_results.to_csv("data/baseline_results.csv", index=False)
-    print("\nSaved to data/baseline_results.csv")
-    
-    study = optuna_search(splits=splits, n_trials=50)
+    study = optuna_search(splits=splits, n_trials=100)
 
     best_params = {
         "objective": "regression",
@@ -324,9 +252,19 @@ if __name__ == "__main__":
 
     results, _ = evaluate_lightgbm(splits, params=best_params)
 
-    print(f"Results with best params")
+    print(f"LightGBM results with best params")
     print(f"Median MAE: {results["mae"].median():.4f}")
     print(f"Average MAE: {results["mae"].mean():.4f}")
+    
+    print("\nSeasonal-naive (t-24h and t-168h)")
+    naive_results = evaluate_baseline(splits)
+    print("Average MAE and RMSE:")
+    print(naive_results.groupby("model")[["mae", "rmse"]].mean())
+    
+    naive_mae = naive_results[naive_results["model"] == "naive_t-24"]["mae"].median()
+    improvement = (naive_mae - results["mae"].median()) / naive_mae
+    print(f"\nSeasonal-naive (t-24) median MAE: {naive_mae:.4f}")
+    print(f"Improvement (median): {improvement:.1%}")
         
     pd.DataFrame([study.best_params]).to_csv("data/best_lightgbm_params.csv", index=False)
     print("Saved best params to data/best_lightgbm_params.csv")
