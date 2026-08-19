@@ -10,18 +10,14 @@ Applikasjonen kan testes via Streamlit-dashboardet.
 Repoet inkluderer et ferdig historisk datasett (`data/NO1_historical.parquet`),
 så du kan hoppe rett til "Kjør lokalt" eller "Kjør med Docker" under uten å hente data selv.
 
+Kjør `fetch_data.py` hvis du vil hente fersk data fra API-ene. Første innsamling kan ta en stund. Frost/MET API krever klient ID, se: https://frost.met.no/auth/requestCredentials.html
+
 ### (Valgfritt) Klient ID for Frost/MET API
 ```bash
 cp .env.example .env
-# fyll inn FROST_CLIENT_ID (gratis, registrer via https://frost.met.no/auth/requestCredentials.html)
+# fyll inn FROST_CLIENT_ID
 
 uv sync
-```
-
-### (Valgfritt) Hent nyere data selv
-
-```bash
-uv run python -c "from fetch_data import fetch_data_range; fetch_data_range()"
 ```
 
 ### Kjør lokalt
